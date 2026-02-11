@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+.cache/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# JavaScript / Frontend
+node_modules/
+frontend/node_modules/
+front_end/node_modules/
+dist/
+build/
+
+# Downloaded sample data
+sample_set/
+**/sample_set/
+
+# Editor / OS
+.vscode/
+.idea/
+.cursor/
+.DS_Store
