@@ -11,6 +11,7 @@
 #   NUREC_IMAGE            - Docker image (default: carlasimulator/nvidia-nurec-grpc:0.2.0)
 #   CUDA_VISIBLE_DEVICES   - GPU id to use inside container (default: 0)
 #   NUREC_CONTAINER_NAME   - Optional fixed container name
+#   PYTORCH_CUDA_ALLOC_CONF - PyTorch CUDA allocator config (default: expandable_segments:True)
 
 set -euo pipefail
 
@@ -25,6 +26,7 @@ if [ -z "${1:-}" ]; then
     echo "  NUREC_IMAGE            - Docker image to run"
     echo "  CUDA_VISIBLE_DEVICES   - GPU id to use (default: 0)"
     echo "  NUREC_CONTAINER_NAME   - Optional container name"
+    echo "  PYTORCH_CUDA_ALLOC_CONF - PyTorch CUDA allocator config"
     exit 1
 fi
 
@@ -38,6 +40,7 @@ PORT="${2:-46435}"
 NUREC_IMAGE="${NUREC_IMAGE:-carlasimulator/nvidia-nurec-grpc:0.2.0}"
 GPU_ID="${CUDA_VISIBLE_DEVICES:-0}"
 CONTAINER_NAME="${NUREC_CONTAINER_NAME:-nurec-grpc-${PORT}}"
+PYTORCH_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 if [ ! -f "$USDZ_PATH" ]; then
     echo "Error: USDZ file not found: $USDZ_PATH"
@@ -53,6 +56,7 @@ echo "========================================"
 echo "USDZ:       $USDZ_PATH"
 echo "Port:       $PORT"
 echo "GPU:        $GPU_ID"
+echo "PyTorch:    $PYTORCH_ALLOC_CONF"
 echo "Image:      $NUREC_IMAGE"
 echo "Container:  $CONTAINER_NAME"
 echo "========================================"
@@ -83,6 +87,7 @@ docker run \
     --gpus all \
     --ipc=host \
     -e CUDA_VISIBLE_DEVICES="$GPU_ID" \
+    -e PYTORCH_CUDA_ALLOC_CONF="$PYTORCH_ALLOC_CONF" \
     -p "${PORT}:${PORT}" \
     -v "${USDZ_DIR}:${USDZ_DIR}:ro" \
     "$NUREC_IMAGE" \
