@@ -1,0 +1,721 @@
+/* SPDX-FileCopyrightText: © 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
+/* SPDX-License-Identifier: MIT */
+
+/* PhysicalAI-AV NuRec Web Viewer Styles - Consistent with webapp */
+
+:root {
+    --primary-color: #76b900;  /* NVIDIA Green */
+    --primary-dark: #5a8f00;
+    --bg-dark: #1a1a2e;
+    --bg-darker: #16162a;
+    --bg-panel: #252542;
+    --text-primary: #ffffff;
+    --text-secondary: #b0b0c0;
+    --border-color: #3a3a5c;
+    --error-color: #ff4757;
+    --success-color: #2ed573;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Main App Container */
+.app-container {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Header */
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 2px solid var(--primary-color);
+  margin-bottom: 20px;
+}
+
+.app-header h1 {
+  font-size: 1.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.status-dot.connected {
+  background-color: var(--primary-color);
+}
+
+.status-dot.disconnected {
+  background-color: var(--error-color);
+}
+
+/* Control Panel */
+.control-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 20px;
+  background: var(--bg-panel);
+  border-radius: 12px;
+  margin-bottom: 20px;
+  align-items: center;
+}
+
+.control-section {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.control-section label {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+select {
+  padding: 10px 15px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-darker);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  min-width: 120px;
+  cursor: pointer;
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--primary-color);
+}
+
+/* Buttons */
+.btn {
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-settings {
+  background: var(--bg-darker);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.btn-settings:hover:not(:disabled) {
+  background: var(--border-color);
+}
+
+.btn-primary {
+  background: var(--primary-color);
+  color: var(--text-primary);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--primary-dark);
+}
+
+/* Layout Presets */
+.layout-presets {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.layout-presets .btn {
+  padding: 8px 15px;
+  font-size: 0.85rem;
+}
+
+/* Video Container - Draggable cameras */
+.video-container {
+  position: relative;
+  min-height: 600px;
+  height: 65vh;
+  margin-bottom: 20px;
+  background: var(--bg-darker);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.video-container .no-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  border-radius: 12px;
+  color: var(--text-secondary);
+}
+
+.video-container .layout-hint {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background: rgba(0,0,0,0.5);
+  padding: 5px 10px;
+  border-radius: 4px;
+  z-index: 5;
+}
+
+/* Draggable Camera View */
+.camera-view {
+  position: absolute;
+  background: var(--bg-darker);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 2px solid var(--border-color);
+  cursor: move;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  min-width: 200px;
+  min-height: 150px;
+}
+
+.camera-view:hover {
+  border-color: var(--primary-color);
+}
+
+.camera-view.dragging {
+  border-color: var(--primary-color);
+  box-shadow: 0 8px 32px rgba(118, 185, 0, 0.3);
+  z-index: 100;
+}
+
+.camera-view .camera-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 8px 12px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
+  z-index: 10;
+  cursor: move;
+}
+
+.camera-view .camera-name {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--primary-color);
+}
+
+.camera-view .camera-timestamp {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.camera-view img {
+  width: 100%;
+  height: auto;
+  display: block;
+  pointer-events: none;
+}
+
+.camera-view .loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--text-secondary);
+}
+
+.camera-view .error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--error-color);
+  text-align: center;
+  padding: 15px;
+  font-size: 0.8rem;
+}
+
+/* Resize handle */
+.camera-view .resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 20px;
+  height: 20px;
+  cursor: se-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--primary-color) 50%);
+  border-radius: 0 0 10px 0;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.camera-view:hover .resize-handle {
+  opacity: 1;
+}
+
+/* Camera Grid (fallback for non-draggable mode) */
+.camera-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 20px;
+  flex: 1;
+  margin-bottom: 20px;
+}
+
+.camera-panel {
+  background-color: var(--bg-panel);
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 2px solid var(--border-color);
+  transition: border-color 0.2s;
+}
+
+.camera-panel:hover {
+  border-color: var(--primary-color);
+}
+
+.camera-label {
+  padding: 10px 15px;
+  background-color: var(--bg-darker);
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--primary-color);
+}
+
+.camera-image-container {
+  position: relative;
+  width: 100%;
+  padding-top: 56.25%; /* 16:9 aspect ratio */
+  background-color: #0a0a0a;
+}
+
+.camera-image-container img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.camera-placeholder {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #666;
+  font-size: 0.9rem;
+}
+
+/* Playback Controls */
+.playback-controls {
+  background: var(--bg-panel);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.timeline-container {
+  margin-bottom: 20px;
+}
+
+.timeline-slider {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--bg-darker);
+  outline: none;
+  cursor: pointer;
+}
+
+.timeline-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--primary-color);
+  cursor: pointer;
+}
+
+.timeline-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--primary-color);
+  cursor: pointer;
+  border: none;
+}
+
+.timeline-slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.time-display {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.playback-buttons {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+}
+
+.playback-btn {
+  background-color: var(--bg-darker);
+  color: var(--text-primary);
+  border: 2px solid var(--border-color);
+  padding: 10px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.2s ease;
+}
+
+.playback-btn:hover {
+  border-color: var(--primary-color);
+  background: var(--bg-panel);
+}
+
+.playback-btn.play-pause {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border-color: var(--primary-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+}
+
+.playback-btn.play-pause:hover {
+  background: var(--primary-color);
+  color: var(--bg-dark);
+}
+
+/* Speed Control */
+.speed-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.speed-control label {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.speed-btn {
+  background-color: var(--bg-darker);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  padding: 5px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.speed-btn:hover {
+  border-color: var(--primary-color);
+}
+
+.speed-btn.active {
+  background-color: var(--primary-color);
+  color: var(--bg-dark);
+  border-color: var(--primary-color);
+}
+
+/* Quality Control */
+.quality-control {
+  margin-left: 30px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.quality-control label {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.quality-control select {
+  min-width: 100px;
+}
+
+/* Camera Selector */
+.camera-selector {
+  background-color: var(--bg-panel);
+  border-radius: 12px;
+  padding: 15px 20px;
+  margin-bottom: 20px;
+}
+
+.camera-selector h3 {
+  font-size: 1rem;
+  margin-bottom: 10px;
+  color: var(--primary-color);
+}
+
+.camera-checkbox-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+}
+
+.camera-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 8px 12px;
+  background: var(--bg-darker);
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+
+.camera-checkbox-item:hover {
+  background: var(--border-color);
+}
+
+.camera-checkbox-item input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary-color);
+}
+
+.camera-checkbox-item label {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.camera-checkbox-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Load Scene Panel */
+.load-panel {
+  background-color: var(--bg-panel);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.load-panel h2 {
+  font-size: 1.2rem;
+  margin-bottom: 15px;
+  color: var(--primary-color);
+}
+
+.load-form {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.load-form input {
+  flex: 1;
+  min-width: 300px;
+  padding: 10px 15px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background-color: var(--bg-darker);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.load-form input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+}
+
+.load-form input::placeholder {
+  color: #666;
+}
+
+.load-form button {
+  background-color: var(--primary-color);
+  color: var(--bg-dark);
+  border: none;
+  padding: 10px 25px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.load-form button:hover:not(:disabled) {
+  background-color: var(--primary-dark);
+}
+
+.load-form button:disabled {
+  background-color: #444;
+  cursor: not-allowed;
+}
+
+/* Error Message */
+.error-message {
+  background-color: var(--error-color);
+  color: white;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+/* Status Bar */
+.status-bar {
+  margin-top: 20px;
+  padding: 10px 20px;
+  background: var(--bg-panel);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.decoder-info {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  background: rgba(118, 185, 0, 0.15);
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(118, 185, 0, 0.3);
+}
+
+.status-bar .error {
+  color: var(--error-color);
+}
+
+.status-bar .success {
+  color: var(--success-color);
+}
+
+/* Loading Spinner */
+.loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 50px;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--primary-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Clip Info */
+.clip-info {
+  display: flex;
+  gap: 20px;
+  padding: 15px 20px;
+  background: var(--bg-panel);
+  border-radius: 8px;
+  margin-bottom: 20px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .app-container {
+    padding: 10px;
+  }
+
+  .app-header h1 {
+    font-size: 1.3rem;
+  }
+
+  .control-panel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .control-section {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  select {
+    width: 100%;
+  }
+
+  .video-container {
+    height: 50vh;
+    min-height: 400px;
+  }
+
+  .playback-buttons {
+    flex-wrap: wrap;
+  }
+
+  .speed-control {
+    flex-wrap: wrap;
+  }
+
+  .quality-control {
+    margin-left: 0;
+    margin-top: 15px;
+  }
+}
