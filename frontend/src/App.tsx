@@ -114,6 +114,10 @@ function App() {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
+    // Stop rendering old scene while switching to a new USDZ.
+    setScenarioLoaded(false);
+    setScenario(null);
+    setImages({});
     setStatusMessage('Loading scenario...');
 
     try {

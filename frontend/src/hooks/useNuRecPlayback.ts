@@ -96,8 +96,8 @@ export function useNuRecPlayback(scenario: ScenarioInfo | null): UseNuRecPlaybac
   // Toggle play/pause
   const togglePlay = useCallback(() => {
     setPlaybackState((prev) => {
-      // If at the end, reset to start
-      if (scenario && prev.currentTime_us >= scenario.time_range.end_us) {
+      // Only auto-restart when user presses Play while already paused at end.
+      if (scenario && !prev.isPlaying && prev.currentTime_us >= scenario.time_range.end_us) {
         return {
           ...prev,
           isPlaying: true,

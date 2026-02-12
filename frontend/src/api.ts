@@ -20,6 +20,28 @@ import type {
 } from './types';
 
 const API_BASE = '/api';
+const RESTART_TIMEOUT_MS = 180000;
+const LOAD_TIMEOUT_MS = 180000;
+
+async function fetchJsonWithTimeout<T>(url: string, init: RequestInit, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `Request failed: ${response.statusText}`);
+    }
+    return response.json() as Promise<T>;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${Math.floor(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
 
 /**
  * Check backend health status
@@ -36,16 +58,11 @@ export async function checkHealth(): Promise<HealthResponse> {
  * Load a USDZ scenario
  */
 export async function loadScenario(request: LoadRequest): Promise<LoadResponse> {
-  const response = await fetch(`${API_BASE}/load`, {
+  return fetchJsonWithTimeout<LoadResponse>(`${API_BASE}/load`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
-  });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || `Load failed: ${response.statusText}`);
-  }
-  return response.json();
+  }, LOAD_TIMEOUT_MS);
 }
 
 /**
@@ -64,16 +81,11 @@ export async function listUsdzFiles(): Promise<UsdzFilesResponse> {
  * Restart NuRec service using selected USDZ path
  */
 export async function restartNurecService(request: NurecRestartRequest): Promise<NurecRestartResponse> {
-  const response = await fetch(`${API_BASE}/nurec/restart`, {
+  return fetchJsonWithTimeout<NurecRestartResponse>(`${API_BASE}/nurec/restart`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
-  });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || `Failed to restart NuRec: ${response.statusText}`);
-  }
-  return response.json();
+  }, RESTART_TIMEOUT_MS);
 }
 
 /**
