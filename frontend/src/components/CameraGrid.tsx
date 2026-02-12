@@ -89,7 +89,7 @@ const CameraGrid: React.FC<CameraGridProps> = ({ selectedCameras, images, curren
   }, [positions, sizes]);
 
   // Get default position for a camera
-  const getDefaultPosition = useCallback((camera: string, index: number): CameraPosition => {
+  const getDefaultPosition = useCallback((_camera: string, index: number): CameraPosition => {
     const container = containerRef.current;
     if (!container) return { x: 15, y: 15 };
 

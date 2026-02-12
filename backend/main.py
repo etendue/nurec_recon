@@ -106,6 +106,17 @@ class AppState:
 app_state = AppState()
 
 
+def _probe_nurec_connection(host: str, port: int, timeout_seconds: float = 0.8) -> bool:
+    """Check if NuRec gRPC endpoint is reachable."""
+    try:
+        channel = grpc.insecure_channel(f"{host}:{port}")
+        grpc.channel_ready_future(channel).result(timeout=timeout_seconds)
+        channel.close()
+        return True
+    except Exception:
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting NuRec Web Viewer Backend...")
@@ -237,8 +248,9 @@ def _load_scenario_from_usdz(usdz_path: str) -> tuple[str, str, Dict[str, object
     if not isinstance(rig_data, dict) or not isinstance(data_info, dict):
         raise ValueError("Invalid JSON structure in USDZ.")
 
-    scene_id = os.path.splitext(os.path.basename(usdz_path))[0]
-    sequence_id = str(data_info.get("sequence_id", scene_id))
+    file_stem = os.path.splitext(os.path.basename(usdz_path))[0]
+    sequence_id = str(data_info.get("sequence_id", file_stem))
+    scene_id = sequence_id
 
     camera_calibrations = rig_data.get("camera_calibrations", {})
     cameras: Dict[str, object] = {}
@@ -314,11 +326,12 @@ def _playback_state_response(playback: PlaybackClock) -> PlaybackStateResponse:
 
 @app.get("/api/health")
 async def health_check():
+    grpc_connected = _probe_nurec_connection(app_state.nurec_host, app_state.nurec_port)
     return {
         "status": "healthy",
         "nurec_available": NUREC_AVAILABLE,
         "scenario_loaded": app_state.scene_id is not None,
-        "grpc_connected": app_state.grpc_stub is not None,
+        "grpc_connected": grpc_connected,
     }
 
 

@@ -60,8 +60,11 @@ function App() {
     const checkConnection = async () => {
       try {
         const health = await checkHealth();
-        setIsConnected(health.status === 'healthy');
+        setIsConnected(health.grpc_connected);
         setScenarioLoaded(health.scenario_loaded);
+        if (!health.grpc_connected) {
+          setStatusMessage('NuRec disconnected');
+        }
 
         // If scenario is already loaded, fetch info
         if (health.scenario_loaded) {
@@ -178,7 +181,7 @@ function App() {
         <h1>NVIDIA PhysicalAI - NuRec Web Viewer</h1>
         <div className="status-indicator">
           <span className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`} />
-          <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
+          <span>{isConnected ? 'NuRec Connected' : 'NuRec Disconnected'}</span>
         </div>
       </header>
 
