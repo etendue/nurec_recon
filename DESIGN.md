@@ -24,7 +24,7 @@ NuRec Web Viewer 是一个基于 Web 的神经重建场景查看器，允许用�
 
 | ID | 需求 | 优先级 | 描述 |
 |----|------|--------|------|
-| FR-01 | 加载场景 | P0 | 加载 USDZ 路径并连接 NuRec gRPC，获取 scene/camera/trajectory 元数据 |
+| FR-01 | 加载场景 | P0 | 加载 USDZ 路径并连接 NuRec gRPC，初始化本地 runtime scenario（camera/trajectory/time range） |
 | FR-02 | 相机选择 | P0 | 显示可用相机列表，允许选择最多 3 个相机 |
 | FR-03 | 图像渲染 | P0 | 调用 NuRec gRPC 服务渲染选中相机的图像 |
 | FR-04 | 播放控制 | P0 | 支持 Play/Pause 切换 |
@@ -86,13 +86,13 @@ NuRec Web Viewer 是一个基于 Web 的神经重建场景查看器，允许用�
 ├────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                │
 │  ┌─────────────────────┐   ┌──────────────────────┐   ┌───────────────────┐   │
-│  │  Session Manager    │   │  Metadata Adapter    │   │  Render Proxy     │   │
-│  │  - connect_grpc()   │   │  - list_cameras()    │   │  - render_cameras │   │
-│  │  - load_scene()     │   │  - list_trajectory() │   │  - timeout guard  │   │
-│  │  - select_scene()   │   │  - interpolate_pose  │   │  - error capture  │   │
+│  │  Session Manager    │   │  Scenario Runtime    │   │  Render Proxy     │   │
+│  │  - connect_grpc()   │   │  - parse USDZ        │   │  - render_cameras │   │
+│  │  - load_scene()     │   │  - ego interpolation │   │  - timeout guard  │   │
+│  │  - playback init    │   │  - playback tick     │   │  - error capture  │   │
 │  └─────────────────────┘   └──────────────────────┘   └───────────────────┘   │
 │                                                                                │
-│                 直接调用 SensorsimService（无 scenario.py 依赖）                │
+│            本地 ScenarioRuntime + gRPC render_rgb（渲染代理）                   │
 └────────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       │ gRPC (SensorsimService)
@@ -104,9 +104,8 @@ NuRec Web Viewer 是一个基于 Web 的神经重建场景查看器，允许用�
 │  ┌────────────────────────────────────────────────────────────────────────┐   │
 │  │                     gRPC Server (SensorsimService)                      │   │
 │  ├────────────────────────────────────────────────────────────────────────┤   │
-│  │  get_available_scenes()    - 返回场景 ID 列表                           │   │
-│  │  get_available_cameras()   - 返回相机列表和内参                          │   │
 │  │  render_rgb()              - 渲染图像                                   │   │
+│  │  (available_* 接口可用于诊断，不是 backend 主路径)                        │   │
 │  └────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 │  ┌────────────────────────────────────────────────────────────────────────┐   │
@@ -134,7 +133,8 @@ NuRec Web Viewer 是一个基于 Web 的神经重建场景查看器，允许用�
 
 | 模块 | 职责 |
 |------|------|
-| `main.py` | API 入口，gRPC 会话管理，渲染代理 |
+| `main.py` | API 入口，gRPC 会话管理，渲染代理，playback 路由 |
+| `scenario_runtime.py` | USDZ 解析、轨迹插值、track 生命周期、playback 时钟 |
 | `models.py` | Pydantic 数据模型 |
 | `proto/` | `common.proto`、`sensorsim.proto` 协议定义 |
 | `backend/.cache/proto_generated` | 运行时自动生成的 Python gRPC stub（不入库） |
@@ -153,12 +153,11 @@ Frontend                    Backend                      NuRec Container
     │                           │                           │
     │── POST /api/load ─────────►│                           │
     │   { usdz_path, host, port }│                           │
-    │                           │── gRPC get_available_scenes ───►│
-    │                           │◄── scenes list ───────────│
-    │                           │── gRPC get_available_cameras ──►│
-    │                           │◄── cameras list ──────────│
-    │                           │── gRPC get_available_trajectories ─►│
-    │                           │◄── trajectory list ───────│
+    │                           │── connect grpc ───────────►│
+    │                           │◄── channel ready ─────────│
+    │                           │── parse usdz locally       │
+    │                           │   (scenario_runtime)       │
+    │                           │── init playback clock      │
     │                           │                           │
     │◄── LoadResponse ─────────│                           │
     │                           │                           │
@@ -214,29 +213,29 @@ Frontend                    Backend                      NuRec Container
     │                           │                           │
 ```
 
-### 4.3 播放循环
+### 4.3 播放循环（推荐：后端时钟驱动）
 
 ```javascript
-// 前端播放循环伪代码
-while (isPlaying) {
-    currentTime_us += timeStep_us * playbackSpeed;
-    
-    if (currentTime_us >= endTime_us) {
-        isPlaying = false;
-        break;
-    }
-    
-    // 请求渲染
-    images = await fetch('/api/render', {
-        timestamp_us: currentTime_us,
-        camera_ids: selectedCameras
-    });
-    
-    // 更新显示
-    updateCameraImages(images);
-    
-    // 帧率控制
-    await sleep(1000 / targetFPS);
+// 前端播放循环伪代码（后端 tick）
+await fetch('/api/playback/play', { method: 'POST', body: { speed } });
+
+while (true) {
+  const tick = await fetch('/api/playback/tick', {
+    method: 'POST',
+    body: { delta_us: frameStepUs }
+  });
+
+  if (tick.done || !tick.is_playing) {
+    break;
+  }
+
+  const images = await fetch('/api/render', {
+    timestamp_us: tick.current_time_us,
+    camera_ids: selectedCameras
+  });
+
+  updateCameraImages(images);
+  await sleep(1000 / targetFPS);
 }
 ```
 
@@ -368,6 +367,74 @@ GET /api/render/{camera_id}?timestamp_us=1609459200500000&scale=0.25
 ```
 
 **响应**: `image/jpeg` 二进制数据
+
+#### 5.1.7 播放状态查询
+
+```
+GET /api/playback
+```
+
+**响应**:
+```json
+{
+    "is_playing": false,
+    "speed": 1.0,
+    "current_time_us": 1609459200000000,
+    "seconds_since_start": 0.0,
+    "done": false
+}
+```
+
+#### 5.1.8 开始播放 / 设置速度
+
+```
+POST /api/playback/play
+```
+
+**请求体**（可选）:
+```json
+{
+    "speed": 1.0
+}
+```
+
+#### 5.1.9 暂停播放
+
+```
+POST /api/playback/stop
+```
+
+#### 5.1.10 重置播放到起点
+
+```
+POST /api/playback/reset
+```
+
+#### 5.1.11 手动推进 tick
+
+```
+POST /api/playback/tick
+```
+
+**请求体**（可选）:
+```json
+{
+    "delta_us": 100000
+}
+```
+
+**响应**:
+```json
+{
+    "is_playing": true,
+    "speed": 1.0,
+    "current_time_us": 1609459200100000,
+    "seconds_since_start": 0.1,
+    "done": false,
+    "new_track_ids": ["track_001"],
+    "removed_track_ids": []
+}
+```
 
 ---
 
@@ -525,6 +592,7 @@ def interpolate_pose_matrix(self, timestamp: float) -> np.ndarray:
 │   └── sensorsim.proto          # gRPC sensorsim service/messages
 ├── backend/
 │   ├── main.py                  # FastAPI 入口
+│   ├── scenario_runtime.py      # USDZ 解析 + 轨迹/播放运行时
 │   ├── models.py                # Pydantic 数据模型
 │   ├── requirements.txt         # Python 依赖
 │   ├── .cache/
@@ -610,23 +678,27 @@ npm run dev
 
 ---
 
-## 12. 当前实施进展（2026-02-11）
+## 12. 当前实施进展（2026-02-12）
 
 ### 12.1 已完成修改
 
 - 下载流程：文档和操作统一为 `hf download`（gated dataset 登录后下载）。
 - `scripts/start_nurec.sh`：改为 Docker-only，删除 chroot/rootfs 相关逻辑。
 - Backend：
-  - 去除对 `scenario.py`/`track.py` 的强依赖。
-  - 改为直接调用 `SensorsimService`（本地 `proto/` 生成 stub）。
+  - 新增 `scenario_runtime.py`，按 `sample_code/scenario.py + track.py` 逻辑解析 USDZ。
+  - 去除 `carla` 依赖路径（仅保留后端所需轨迹插值与 track 生命周期逻辑）。
+  - `pose/trajectory/render` 时间位姿来源统一到 `scenario_runtime` 的 ego 轨迹。
+  - 新增 `/api/playback`、`/api/playback/play`、`/api/playback/stop`、`/api/playback/reset`、`/api/playback/tick`。
+  - gRPC 侧主要用于 `render_rgb` 渲染代理。
   - `proto` 代码采用运行时生成到 `backend/.cache/proto_generated`。
   - 增加 gRPC 调用超时，避免接口长时间阻塞。
 
 ### 12.2 当前测试结果
 
 - 服务启动：NuRec (`:46435`)、Backend (`:8000`)、Frontend (`:3000`) 均可启动。
-- `/api/load`：已成功返回 `loaded`，可获取 scene id。
-- 页面状态：前后端连接正常，可加载场景元数据。
+- `/api/load`：已成功返回 `loaded`，并初始化 runtime scenario 与 playback clock。
+- `/api/scenario`、`/api/trajectory`、`/api/pose`：基于本地 USDZ 解析结果返回。
+- `/api/playback/*`：可用于前端 play/stop/tick 控制。
 
 ### 12.3 已知问题
 
