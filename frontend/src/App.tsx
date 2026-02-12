@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import type { ScenarioInfo } from './types';
-import { checkHealth, loadScenario, getScenarioInfo, renderCameras } from './api';
+import { checkHealth, loadScenario, getScenarioInfo, renderCameras, listUsdzFiles, restartNurecService } from './api';
 import CameraGrid from './components/CameraGrid';
 import PlaybackControls, { type QualityLevel } from './components/PlaybackControls';
 import CameraSelector from './components/CameraSelector';
@@ -35,6 +35,7 @@ function App() {
 
   // Load form state
   const [usdzPath, setUsdzPath] = useState('');
+  const [usdzFiles, setUsdzFiles] = useState<string[]>([]);
   const [nurecHost, setNurecHost] = useState('localhost');
   const [nurecPort, setNurecPort] = useState('46435');
 
@@ -70,9 +71,15 @@ function App() {
         if (health.scenario_loaded) {
           const info = await getScenarioInfo();
           setScenario(info);
-          // Select first 3 cameras by default
-          const defaultCameras = info.cameras.slice(0, 3).map(c => c.logical_name);
-          setSelectedCameras(defaultCameras);
+          // Keep user's current camera selection if still valid; otherwise fall back.
+          setSelectedCameras(prev => {
+            const available = new Set(info.cameras.map(c => c.logical_name));
+            const validPrev = prev.filter(id => available.has(id));
+            if (validPrev.length > 0) {
+              return validPrev;
+            }
+            return info.cameras.slice(0, 3).map(c => c.logical_name);
+          });
           setStatusMessage('Scenario loaded');
         }
       } catch (err) {
@@ -88,6 +95,20 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Load USDZ options from default sample_set
+  useEffect(() => {
+    const fetchUsdzFiles = async () => {
+      try {
+        const response = await listUsdzFiles();
+        setUsdzFiles(response.files);
+        setUsdzPath((prev) => prev || response.files[0] || '');
+      } catch (err) {
+        console.error('Failed to list USDZ files:', err);
+      }
+    };
+    fetchUsdzFiles();
+  }, []);
+
   // Handle load scenario
   const handleLoadScenario = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -96,6 +117,17 @@ function App() {
     setStatusMessage('Loading scenario...');
 
     try {
+      setStatusMessage('Restarting NuRec service...');
+      const restartResp = await restartNurecService({
+        usdz_path: usdzPath,
+        nurec_host: nurecHost,
+        nurec_port: parseInt(nurecPort, 10),
+      });
+      if (!restartResp.grpc_ready) {
+        throw new Error('NuRec service is still starting. Please retry in a few seconds.');
+      }
+
+      setStatusMessage('Loading scenario...');
       await loadScenario({
         usdz_path: usdzPath,
         nurec_host: nurecHost,
@@ -193,38 +225,43 @@ function App() {
         </div>
       )}
 
-      {/* Load Panel (show when no scenario loaded) */}
-      {!scenarioLoaded && (
-        <div className="load-panel">
-          <h2>Load USDZ Scenario</h2>
-          <form className="load-form" onSubmit={handleLoadScenario}>
-            <input
-              type="text"
-              placeholder="Path to USDZ file (e.g., /path/to/scene.usdz)"
-              value={usdzPath}
-              onChange={(e) => setUsdzPath(e.target.value)}
-              required
-            />
-            <input
-              type="text"
-              placeholder="NuRec Host"
-              value={nurecHost}
-              onChange={(e) => setNurecHost(e.target.value)}
-              style={{ minWidth: 120, flex: 0 }}
-            />
-            <input
-              type="text"
-              placeholder="Port"
-              value={nurecPort}
-              onChange={(e) => setNurecPort(e.target.value)}
-              style={{ minWidth: 80, flex: 0 }}
-            />
-            <button type="submit" disabled={isLoading || !usdzPath}>
-              {isLoading ? 'Loading...' : 'Load'}
-            </button>
-          </form>
-        </div>
-      )}
+      {/* Load Panel */}
+      <div className="load-panel">
+        <h2>Load USDZ Scenario</h2>
+        <form className="load-form" onSubmit={handleLoadScenario}>
+          <select
+            value={usdzPath}
+            onChange={(e) => setUsdzPath(e.target.value)}
+            style={{ minWidth: 420, flex: 1 }}
+            required
+          >
+            {usdzFiles.length === 0 ? (
+              <option value="">No USDZ files found in sample_set</option>
+            ) : (
+              usdzFiles.map((path) => (
+                <option key={path} value={path}>{path}</option>
+              ))
+            )}
+          </select>
+          <input
+            type="text"
+            placeholder="NuRec Host"
+            value={nurecHost}
+            onChange={(e) => setNurecHost(e.target.value)}
+            style={{ minWidth: 120, flex: 0 }}
+          />
+          <input
+            type="text"
+            placeholder="Port"
+            value={nurecPort}
+            onChange={(e) => setNurecPort(e.target.value)}
+            style={{ minWidth: 80, flex: 0 }}
+          />
+          <button type="submit" disabled={isLoading || !usdzPath}>
+            {isLoading ? 'Loading...' : 'Load'}
+          </button>
+        </form>
+      </div>
 
       {/* Main Content (show when scenario loaded) */}
       {scenarioLoaded && scenario && (

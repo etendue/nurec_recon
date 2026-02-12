@@ -73,3 +73,20 @@ export interface HealthResponse {
   scenario_loaded: boolean;
   grpc_connected: boolean;
 }
+
+export interface UsdzFilesResponse {
+  files: string[];
+}
+
+export interface NurecRestartRequest {
+  usdz_path: string;
+  nurec_host?: string;
+  nurec_port?: number;
+}
+
+export interface NurecRestartResponse {
+  status: string;
+  container_name: string;
+  usdz_path: string;
+  grpc_ready: boolean;
+}

@@ -103,3 +103,23 @@ class PlaybackTickResponse(PlaybackStateResponse):
     """Tick update response"""
     new_track_ids: List[str]
     removed_track_ids: List[str]
+
+
+class UsdzFilesResponse(BaseModel):
+    """USDZ file list from default sample directory"""
+    files: List[str]
+
+
+class NurecRestartRequest(BaseModel):
+    """Request to restart NuRec docker service with a specific USDZ"""
+    usdz_path: str
+    nurec_host: str = "localhost"
+    nurec_port: int = 46435
+
+
+class NurecRestartResponse(BaseModel):
+    """Response after NuRec restart request"""
+    status: str
+    container_name: str
+    usdz_path: str
+    grpc_ready: bool

@@ -330,6 +330,7 @@ const CameraGrid: React.FC<CameraGridProps> = ({ selectedCameras, images, curren
                 left: `${pos.x}px`,
                 top: `${pos.y}px`,
                 width: `${size.width}px`,
+                height: `${size.height}px`,
               }}
               onMouseDown={(e) => handleMouseDown(e, cameraId)}
             >

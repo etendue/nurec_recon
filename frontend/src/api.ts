@@ -14,6 +14,9 @@ import type {
   TrajectoryResponse,
   PoseAtTime,
   HealthResponse,
+  UsdzFilesResponse,
+  NurecRestartRequest,
+  NurecRestartResponse,
 } from './types';
 
 const API_BASE = '/api';
@@ -41,6 +44,34 @@ export async function loadScenario(request: LoadRequest): Promise<LoadResponse> 
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.detail || `Load failed: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+/**
+ * List USDZ files under backend default sample_set directory
+ */
+export async function listUsdzFiles(): Promise<UsdzFilesResponse> {
+  const response = await fetch(`${API_BASE}/usdz-files`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || `Failed to list USDZ files: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+/**
+ * Restart NuRec service using selected USDZ path
+ */
+export async function restartNurecService(request: NurecRestartRequest): Promise<NurecRestartResponse> {
+  const response = await fetch(`${API_BASE}/nurec/restart`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || `Failed to restart NuRec: ${response.statusText}`);
   }
   return response.json();
 }

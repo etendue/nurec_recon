@@ -9,7 +9,9 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import grpc
@@ -25,6 +27,8 @@ from models import (
     PlaybackStateResponse,
     PlaybackTickRequest,
     PlaybackTickResponse,
+    NurecRestartRequest,
+    NurecRestartResponse,
     LoadRequest,
     LoadResponse,
     PoseAtTime,
@@ -34,6 +38,7 @@ from models import (
     TimeRange,
     TrajectoryPoint,
     TrajectoryResponse,
+    UsdzFilesResponse,
 )
 from scenario_runtime import PlaybackClock, Scenario
 
@@ -42,6 +47,7 @@ BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(BACKEND_DIR)
 PROTO_SRC_DIR = os.path.join(REPO_DIR, "proto")
 PROTO_GEN_DIR = os.path.join(BACKEND_DIR, ".cache", "proto_generated")
+DEFAULT_SAMPLE_SET_DIR = os.path.join(REPO_DIR, "sample_set")
 
 
 def _generate_proto_modules() -> None:
@@ -104,6 +110,90 @@ class AppState:
 
 
 app_state = AppState()
+
+
+def _resolve_usdz_path(raw_path: str) -> str:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = Path(REPO_DIR) / path
+    return str(path.resolve())
+
+
+def _list_usdz_files(base_dir: str) -> List[str]:
+    root = Path(base_dir)
+    if not root.exists():
+        return []
+    files = sorted(str(p.resolve()) for p in root.rglob("*.usdz") if p.is_file())
+    return files
+
+
+def _detect_docker_command() -> List[str]:
+    normal = subprocess.run(
+        ["docker", "ps"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if normal.returncode == 0:
+        return ["docker"]
+    with_sudo = subprocess.run(
+        ["sudo", "-n", "docker", "ps"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if with_sudo.returncode == 0:
+        return ["sudo", "-n", "docker"]
+    raise RuntimeError(
+        "Docker is not accessible. Configure docker group access or passwordless sudo."
+    )
+
+
+def _restart_nurec_container(usdz_path: str, port: int) -> str:
+    image = os.getenv("NUREC_IMAGE", "carlasimulator/nvidia-nurec-grpc:0.2.0")
+    gpu_id = os.getenv("CUDA_VISIBLE_DEVICES", "0")
+    pytorch_alloc_conf = os.getenv("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    container_name = os.getenv("NUREC_CONTAINER_NAME", f"nurec-grpc-{port}")
+    docker = _detect_docker_command()
+
+    subprocess.run(
+        docker + ["rm", "-f", container_name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    usdz_dir = str(Path(usdz_path).resolve().parent)
+    run_cmd = docker + [
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        container_name,
+        "--gpus",
+        "all",
+        "--ipc=host",
+        "-e",
+        f"CUDA_VISIBLE_DEVICES={gpu_id}",
+        "-e",
+        f"PYTORCH_CUDA_ALLOC_CONF={pytorch_alloc_conf}",
+        "-p",
+        f"{port}:{port}",
+        "-v",
+        f"{usdz_dir}:{usdz_dir}:ro",
+        image,
+        "--artifact-glob",
+        usdz_path,
+        "--port",
+        str(port),
+        "--host",
+        "0.0.0.0",
+        "--test-scenes-are-valid",
+    ]
+    proc = subprocess.run(run_cmd, check=False, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "Failed to start NuRec docker container")
+    return container_name
 
 
 def _probe_nurec_connection(host: str, port: int, timeout_seconds: float = 0.8) -> bool:
@@ -335,6 +425,50 @@ async def health_check():
     }
 
 
+@app.get("/api/usdz-files", response_model=UsdzFilesResponse)
+async def get_usdz_files():
+    files = _list_usdz_files(DEFAULT_SAMPLE_SET_DIR)
+    return UsdzFilesResponse(files=files)
+
+
+@app.post("/api/nurec/restart", response_model=NurecRestartResponse)
+async def restart_nurec(request: NurecRestartRequest):
+    usdz_path = _resolve_usdz_path(request.usdz_path)
+    if not os.path.exists(usdz_path):
+        raise HTTPException(status_code=404, detail=f"USDZ file not found: {usdz_path}")
+
+    try:
+        container_name = _restart_nurec_container(usdz_path, request.nurec_port)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to restart NuRec: {exc}")
+
+    app_state.nurec_host = request.nurec_host
+    app_state.nurec_port = request.nurec_port
+    if app_state.grpc_channel:
+        app_state.grpc_channel.close()
+    app_state.grpc_channel = None
+    app_state.grpc_stub = None
+    app_state.scene_id = None
+    app_state.available_cameras = {}
+    app_state.available_trajectories = []
+    app_state.runtime_scenario = None
+    app_state.playback = None
+
+    grpc_ready = False
+    for _ in range(45):
+        if _probe_nurec_connection(request.nurec_host, request.nurec_port):
+            grpc_ready = True
+            break
+        time.sleep(1)
+
+    return NurecRestartResponse(
+        status="restarted" if grpc_ready else "starting",
+        container_name=container_name,
+        usdz_path=usdz_path,
+        grpc_ready=grpc_ready,
+    )
+
+
 @app.post("/api/load", response_model=LoadResponse)
 async def load_scenario(request: LoadRequest):
     if not NUREC_AVAILABLE:
@@ -461,15 +595,17 @@ async def render_cameras(request: RenderRequest):
         camera_matrix = rig_matrix @ _pose_to_matrix(cam.rig_to_camera)
         sensor_pose = _matrix_to_pose(camera_matrix)
 
+        # Keep calibration intrinsics unchanged; only scale output resolution.
+        # For fisheye/ftheta cameras, mutating intrinsic resolution can behave like FOV crop.
         camera_spec = sensorsim_pb2.CameraSpec()
         camera_spec.CopyFrom(cam.intrinsics)
-        camera_spec.resolution_h = max(1, int(camera_spec.resolution_h * request.resolution_scale))
-        camera_spec.resolution_w = max(1, int(camera_spec.resolution_w * request.resolution_scale))
+        output_h = max(1, int(camera_spec.resolution_h * request.resolution_scale))
+        output_w = max(1, int(camera_spec.resolution_w * request.resolution_scale))
 
         grpc_request = sensorsim_pb2.RGBRenderRequest(
             scene_id=app_state.scene_id,
-            resolution_h=camera_spec.resolution_h,
-            resolution_w=camera_spec.resolution_w,
+            resolution_h=output_h,
+            resolution_w=output_w,
             camera_intrinsics=camera_spec,
             frame_start_us=int(request.timestamp_us),
             frame_end_us=int(request.timestamp_us) + 1,
