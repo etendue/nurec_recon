@@ -6,7 +6,7 @@
  * Design consistent with webapp (PhysicalAI-AV Camera Replay)
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { ScenarioInfo } from './types';
 import { checkHealth, loadScenario, getScenarioInfo, renderCameras, listUsdzFiles, restartNurecService } from './api';
 import CameraGrid from './components/CameraGrid';
@@ -44,6 +44,7 @@ function App() {
 
   // Quality state
   const [quality, setQuality] = useState<QualityLevel>('medium');
+  const isLoadingRef = useRef(false);
 
   // Playback hook
   const {
@@ -56,19 +57,30 @@ function App() {
     seekTo,
   } = useNuRecPlayback(scenario);
 
+  useEffect(() => {
+    isLoadingRef.current = isLoading;
+  }, [isLoading]);
+
   // Check backend health on mount
   useEffect(() => {
     const checkConnection = async () => {
       try {
         const health = await checkHealth();
         setIsConnected(health.grpc_connected);
-        setScenarioLoaded(health.scenario_loaded);
+        if (!isLoadingRef.current) {
+          setScenarioLoaded(health.scenario_loaded);
+        }
         if (!health.grpc_connected) {
           setStatusMessage('NuRec disconnected');
         }
 
-        // If scenario is already loaded, fetch info
-        if (health.scenario_loaded) {
+        // Don't overwrite UI state while explicit loading/restart is in progress.
+        if (isLoadingRef.current) {
+          return;
+        }
+
+        // If scenario is loaded but local state is empty, fetch once.
+        if (health.scenario_loaded && !scenario) {
           const info = await getScenarioInfo();
           setScenario(info);
           // Keep user's current camera selection if still valid; otherwise fall back.
@@ -93,7 +105,7 @@ function App() {
     // Periodically check connection
     const interval = setInterval(checkConnection, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [scenario]);
 
   // Load USDZ options from default sample_set
   useEffect(() => {
@@ -183,7 +195,7 @@ function App() {
 
   // Fetch images when time or cameras change
   useEffect(() => {
-    if (!scenarioLoaded || selectedCameras.length === 0) return;
+    if (!scenarioLoaded || selectedCameras.length === 0 || isLoading) return;
 
     const fetchImages = async () => {
       try {
@@ -200,7 +212,7 @@ function App() {
     };
 
     fetchImages();
-  }, [playbackState.currentTime_us, selectedCameras, scenarioLoaded, quality]);
+  }, [playbackState.currentTime_us, selectedCameras, scenarioLoaded, quality, isLoading]);
 
   // Format time display
   const formatTime = (us: number, startUs: number = 0): string => {
