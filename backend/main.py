@@ -10,17 +10,21 @@ import os
 import subprocess
 import sys
 from contextlib import asynccontextmanager
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import grpc
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from scipy.spatial.transform import Rotation, Slerp
+from scipy.spatial.transform import Rotation
 
 from models import (
     CameraInfo,
+    PlaybackControlRequest,
+    PlaybackStateResponse,
+    PlaybackTickRequest,
+    PlaybackTickResponse,
     LoadRequest,
     LoadResponse,
     PoseAtTime,
@@ -31,6 +35,7 @@ from models import (
     TrajectoryPoint,
     TrajectoryResponse,
 )
+from scenario_runtime import PlaybackClock, Scenario
 
 # Load protobuf modules generated from local ./proto at runtime.
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -94,6 +99,8 @@ class AppState:
         self.scene_id: Optional[str] = None
         self.available_cameras: Dict[str, object] = {}
         self.available_trajectories = []
+        self.runtime_scenario: Optional[Scenario] = None
+        self.playback: Optional[PlaybackClock] = None
 
 
 app_state = AppState()
@@ -151,71 +158,158 @@ def _matrix_to_pose(matrix: np.ndarray):
     )
 
 
-def _select_scene_id(usdz_path: str, scene_ids: list[str]) -> str:
-    if not scene_ids:
-        raise HTTPException(status_code=500, detail="No scenes available in NuRec service.")
-    preferred = os.path.splitext(os.path.basename(usdz_path))[0]
-    if preferred in scene_ids:
-        return preferred
-    return scene_ids[0]
+def _matrix44_to_pose(matrix_data: List[List[float]]):
+    matrix = np.array(matrix_data, dtype=np.float64)
+    if matrix.shape != (4, 4):
+        raise ValueError(f"Expected 4x4 transform matrix, got shape {matrix.shape}")
+    return _matrix_to_pose(matrix)
 
 
-def _get_primary_trajectory():
-    if not app_state.available_trajectories:
-        return None
-    # Prefer trajectory 0 if present, otherwise first available.
-    for trajectory in app_state.available_trajectories:
-        if trajectory.trajectory_idx == 0:
-            return trajectory.trajectory
-    return app_state.available_trajectories[0].trajectory
+def _parse_shutter_type(shutter_type_raw: Any):
+    if not isinstance(shutter_type_raw, str):
+        return sensorsim_pb2.ShutterType.UNKNOWN
+    normalized = shutter_type_raw.strip().upper()
+    return sensorsim_pb2.ShutterType.Value(normalized) if normalized in sensorsim_pb2.ShutterType.keys() else sensorsim_pb2.ShutterType.UNKNOWN
 
 
-def _trajectory_bounds(trajectory) -> tuple[int, int]:
-    poses = list(trajectory.poses)
-    if not poses:
-        return 0, 0
-    return int(poses[0].timestamp_us), int(poses[-1].timestamp_us)
+def _parse_reference_poly(reference_poly_raw: Any):
+    if not isinstance(reference_poly_raw, str):
+        return sensorsim_pb2.FthetaCameraParam.PolynomialType.UNKNOWN
+    normalized = reference_poly_raw.strip().upper()
+    return (
+        sensorsim_pb2.FthetaCameraParam.PolynomialType.Value(normalized)
+        if normalized in sensorsim_pb2.FthetaCameraParam.PolynomialType.keys()
+        else sensorsim_pb2.FthetaCameraParam.PolynomialType.UNKNOWN
+    )
 
 
-def _interpolate_pose_at(trajectory, timestamp_us: int):
-    poses = list(trajectory.poses)
-    if not poses:
-        return None
+def _build_camera_spec(logical_id: str, calibration: Dict[str, Any]):
+    model = calibration.get("camera_model", {})
+    params = model.get("parameters", {})
+    resolution = params.get("resolution", [1080, 1920])
+    if not isinstance(resolution, list) or len(resolution) != 2:
+        raise ValueError(f"Invalid camera resolution for {logical_id}: {resolution}")
 
-    if timestamp_us <= poses[0].timestamp_us:
-        return poses[0].pose
-    if timestamp_us >= poses[-1].timestamp_us:
-        return poses[-1].pose
+    camera_spec = sensorsim_pb2.CameraSpec(
+        logical_id=logical_id,
+        trajectory_idx=int(calibration.get("trajectory_idx", 0)),
+        resolution_h=int(resolution[0]),
+        resolution_w=int(resolution[1]),
+        shutter_type=_parse_shutter_type(params.get("shutter_type")),
+    )
 
-    for idx in range(len(poses) - 1):
-        start = poses[idx]
-        end = poses[idx + 1]
-        if start.timestamp_us <= timestamp_us <= end.timestamp_us:
-            t0 = float(start.timestamp_us)
-            t1 = float(end.timestamp_us)
-            if t1 == t0:
-                return start.pose
-            alpha = (timestamp_us - t0) / (t1 - t0)
+    principal_point = params.get("principal_point", [0.0, 0.0])
+    linear_cde = params.get("linear_cde", [0.0, 0.0, 0.0])
+    if isinstance(linear_cde, dict):
+        linear_cde = [
+            float(linear_cde.get("linear_c", 0.0)),
+            float(linear_cde.get("linear_d", 0.0)),
+            float(linear_cde.get("linear_e", 0.0)),
+        ]
+    while len(linear_cde) < 3:
+        linear_cde.append(0.0)
 
-            start_pos = np.array([start.pose.vec.x, start.pose.vec.y, start.pose.vec.z], dtype=np.float64)
-            end_pos = np.array([end.pose.vec.x, end.pose.vec.y, end.pose.vec.z], dtype=np.float64)
-            interp_pos = (1.0 - alpha) * start_pos + alpha * end_pos
+    camera_spec.ftheta_param.principal_point_x = float(principal_point[0]) if len(principal_point) > 0 else 0.0
+    camera_spec.ftheta_param.principal_point_y = float(principal_point[1]) if len(principal_point) > 1 else 0.0
+    camera_spec.ftheta_param.reference_poly = _parse_reference_poly(params.get("reference_poly"))
+    camera_spec.ftheta_param.pixeldist_to_angle_poly.extend(params.get("pixeldist_to_angle_poly", []))
+    camera_spec.ftheta_param.angle_to_pixeldist_poly.extend(params.get("angle_to_pixeldist_poly", []))
+    camera_spec.ftheta_param.max_angle = float(params.get("max_angle", 0.0))
+    camera_spec.ftheta_param.linear_cde.linear_c = float(linear_cde[0])
+    camera_spec.ftheta_param.linear_cde.linear_d = float(linear_cde[1])
+    camera_spec.ftheta_param.linear_cde.linear_e = float(linear_cde[2])
+    return camera_spec
 
-            start_rot = Rotation.from_quat([start.pose.quat.x, start.pose.quat.y, start.pose.quat.z, start.pose.quat.w])
-            end_rot = Rotation.from_quat([end.pose.quat.x, end.pose.quat.y, end.pose.quat.z, end.pose.quat.w])
-            slerp = Slerp([0.0, 1.0], Rotation.from_quat([start_rot.as_quat(), end_rot.as_quat()]))
-            interp_rot = slerp([alpha])[0].as_quat()  # x, y, z, w
 
-            return common_pb2.Pose(
-                vec=common_pb2.Vec3(x=float(interp_pos[0]), y=float(interp_pos[1]), z=float(interp_pos[2])),
-                quat=common_pb2.Quat(
-                    w=float(interp_rot[3]),
-                    x=float(interp_rot[0]),
-                    y=float(interp_rot[1]),
-                    z=float(interp_rot[2]),
-                ),
+def _load_scenario_from_usdz(usdz_path: str) -> tuple[str, str, Dict[str, object], List[object]]:
+    from scenario_runtime import extract_json_from_usdz
+
+    json_array = extract_json_from_usdz(
+        usdz_path,
+        ["rig_trajectories.json", "sequence_tracks.json", "data_info.json"],
+    )
+    missing = {"rig_trajectories.json", "data_info.json"} - set(json_array.keys())
+    if missing:
+        raise ValueError(f"USDZ missing required files: {sorted(missing)}")
+
+    rig_data = json_array["rig_trajectories.json"]
+    data_info = json_array["data_info.json"]
+    if not isinstance(rig_data, dict) or not isinstance(data_info, dict):
+        raise ValueError("Invalid JSON structure in USDZ.")
+
+    scene_id = os.path.splitext(os.path.basename(usdz_path))[0]
+    sequence_id = str(data_info.get("sequence_id", scene_id))
+
+    camera_calibrations = rig_data.get("camera_calibrations", {})
+    cameras: Dict[str, object] = {}
+    for camera_key, calibration in camera_calibrations.items():
+        logical_id = str(calibration.get("logical_sensor_name", camera_key))
+        camera_spec = _build_camera_spec(logical_id, calibration)
+        rig_to_camera = _matrix44_to_pose(calibration["T_sensor_rig"])
+        available_camera = sensorsim_pb2.AvailableCamerasReturn.AvailableCamera(
+            intrinsics=camera_spec,
+            rig_to_camera=rig_to_camera,
+            logical_id=logical_id,
+            trajectory_idx=int(calibration.get("trajectory_idx", 0)),
+        )
+        cameras[logical_id] = available_camera
+
+    rig_trajectories = rig_data.get("rig_trajectories", [])
+    trajectories: List[object] = []
+    for trajectory_idx, rig_trajectory in enumerate(rig_trajectories):
+        timestamps = rig_trajectory.get("T_rig_world_timestamps_us", [])
+        transforms = rig_trajectory.get("T_rig_worlds", [])
+        if len(timestamps) != len(transforms):
+            logger.warning(
+                "Trajectory %s has mismatched timestamp/pose counts (%s/%s), truncating.",
+                trajectory_idx,
+                len(timestamps),
+                len(transforms),
             )
-    return poses[-1].pose
+        pose_count = min(len(timestamps), len(transforms))
+        trajectory_msg = common_pb2.Trajectory()
+        for idx in range(pose_count):
+            trajectory_msg.poses.add(
+                timestamp_us=int(timestamps[idx]),
+                pose=_matrix44_to_pose(transforms[idx]),
+            )
+        trajectories.append(
+            sensorsim_pb2.AvailableTrajectoriesReturn.AvailableTrajectory(
+                trajectory_idx=trajectory_idx,
+                trajectory=trajectory_msg,
+            )
+        )
+
+    if not cameras:
+        raise ValueError("No camera calibrations found in USDZ.")
+    if not trajectories:
+        raise ValueError("No rig trajectories found in USDZ.")
+    return scene_id, sequence_id, cameras, trajectories
+
+
+def _get_runtime_scenario() -> Scenario:
+    if app_state.runtime_scenario is None:
+        raise HTTPException(status_code=400, detail="No scenario loaded. Call /api/load first.")
+    return app_state.runtime_scenario
+
+
+def _get_playback() -> PlaybackClock:
+    if app_state.playback is None:
+        raise HTTPException(status_code=400, detail="Playback not initialized. Call /api/load first.")
+    return app_state.playback
+
+
+def _playback_state_response(playback: PlaybackClock) -> PlaybackStateResponse:
+    scenario = playback.scenario
+    pose_range = scenario.metadata.get("pose-range", {})
+    end_ts = int(pose_range.get("end-timestamp_us", scenario.tracks.current_time))
+    return PlaybackStateResponse(
+        is_playing=playback.is_playing,
+        speed=float(playback.speed),
+        current_time_us=int(scenario.tracks.current_time),
+        seconds_since_start=float(scenario.tracks.get_current_time_seconds()),
+        done=int(scenario.tracks.current_time) >= end_ts,
+    )
 
 
 @app.get("/api/health")
@@ -240,6 +334,8 @@ async def load_scenario(request: LoadRequest):
         raise HTTPException(status_code=404, detail=f"USDZ file not found: {request.usdz_path}")
 
     try:
+        if app_state.grpc_channel:
+            app_state.grpc_channel.close()
         app_state.nurec_host = request.nurec_host
         app_state.nurec_port = request.nurec_port
         app_state.grpc_channel = grpc.insecure_channel(
@@ -250,33 +346,22 @@ async def load_scenario(request: LoadRequest):
             ],
         )
         app_state.grpc_stub = sensorsim_pb2_grpc.SensorsimServiceStub(app_state.grpc_channel)
+        grpc.channel_ready_future(app_state.grpc_channel).result(timeout=5.0)
 
-        scenes_response = app_state.grpc_stub.get_available_scenes(
-            common_pb2.Empty(),
-            timeout=30.0,
-        )
-        scene_ids = list(scenes_response.scene_ids)
-        app_state.scene_id = _select_scene_id(request.usdz_path, scene_ids)
+        scene_id, sequence_id, cameras, trajectories = _load_scenario_from_usdz(request.usdz_path)
+        app_state.scene_id = scene_id
+        app_state.available_cameras = cameras
+        app_state.available_trajectories = trajectories
+        app_state.runtime_scenario = Scenario(request.usdz_path)
+        app_state.playback = PlaybackClock(app_state.runtime_scenario)
 
-        cameras_response = app_state.grpc_stub.get_available_cameras(
-            sensorsim_pb2.AvailableCamerasRequest(scene_id=app_state.scene_id),
-            timeout=120.0,
-        )
-        app_state.available_cameras = {
-            cam.logical_id: cam for cam in cameras_response.available_cameras
-        }
-
-        try:
-            trajectories_response = app_state.grpc_stub.get_available_trajectories(
-                sensorsim_pb2.AvailableTrajectoriesRequest(scene_id=app_state.scene_id),
-                timeout=20.0,
+        if sequence_id != scene_id:
+            logger.info(
+                "USDZ sequence_id (%s) differs from scene_id derived from filename (%s).",
+                sequence_id,
+                scene_id,
             )
-            app_state.available_trajectories = list(trajectories_response.available_trajectories)
-        except Exception as trajectory_error:
-            logger.warning(f"Trajectory metadata unavailable: {trajectory_error}")
-            app_state.available_trajectories = []
-
-        return LoadResponse(status="loaded", sequence_id=app_state.scene_id)
+        return LoadResponse(status="loaded", sequence_id=sequence_id)
     except Exception as e:
         logger.error(f"Failed to load scenario: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -284,11 +369,10 @@ async def load_scenario(request: LoadRequest):
 
 @app.get("/api/scenario", response_model=ScenarioInfo)
 async def get_scenario_info():
-    if app_state.scene_id is None:
-        raise HTTPException(status_code=400, detail="No scenario loaded. Call /api/load first.")
-
-    trajectory = _get_primary_trajectory()
-    start_us, end_us = _trajectory_bounds(trajectory) if trajectory else (0, 0)
+    scenario = _get_runtime_scenario()
+    pose_range = scenario.metadata.get("pose-range", {})
+    start_us = int(pose_range.get("start-timestamp_us", 0))
+    end_us = int(pose_range.get("end-timestamp_us", start_us))
     time_range = TimeRange(
         start_us=start_us,
         end_us=end_us,
@@ -296,39 +380,36 @@ async def get_scenario_info():
     )
 
     cameras = []
-    for logical_id, cam in app_state.available_cameras.items():
-        camera_matrix = _pose_to_matrix(cam.rig_to_camera)
-        intrinsics = cam.intrinsics
+    for calibration in scenario.camera_calibrations.values():
+        logical_id = calibration.logical_sensor_name
+        resolution = calibration.camera_model.parameters.resolution
         cameras.append(
             CameraInfo(
                 logical_name=logical_id,
-                resolution=[int(intrinsics.resolution_w), int(intrinsics.resolution_h)],
-                T_sensor_rig=camera_matrix.tolist(),
+                resolution=[int(resolution[1]), int(resolution[0])],
+                T_sensor_rig=calibration.T_sensor_rig,
             )
         )
 
-    return ScenarioInfo(sequence_id=app_state.scene_id, time_range=time_range, cameras=cameras)
+    return ScenarioInfo(sequence_id=app_state.scene_id or "", time_range=time_range, cameras=cameras)
 
 
 @app.get("/api/trajectory", response_model=TrajectoryResponse)
 async def get_trajectory(sample_interval_us: int = Query(default=100000, ge=10000)):
-    trajectory = _get_primary_trajectory()
-    if trajectory is None:
-        raise HTTPException(status_code=400, detail="No trajectory data available.")
-
+    scenario = _get_runtime_scenario()
+    pose_range = scenario.metadata.get("pose-range", {})
+    start_us = int(pose_range.get("start-timestamp_us", int(scenario.ego_poses.start_time())))
+    end_us = int(pose_range.get("end-timestamp_us", int(scenario.ego_poses.end_time())))
     points = []
-    last_ts = None
-    for pose_at_time in trajectory.poses:
-        ts = int(pose_at_time.timestamp_us)
-        if last_ts is not None and ts - last_ts < sample_interval_us:
+    for ts in range(start_us, end_us + 1, sample_interval_us):
+        pose = scenario.ego_poses.interpolate_pose_xyzquat(ts)
+        if pose is None:
             continue
-        last_ts = ts
-        pose = pose_at_time.pose
         points.append(
             TrajectoryPoint(
                 timestamp_us=ts,
-                position=[pose.vec.x, pose.vec.y, pose.vec.z],
-                quaternion=[pose.quat.x, pose.quat.y, pose.quat.z, pose.quat.w],
+                position=[float(pose[0]), float(pose[1]), float(pose[2])],
+                quaternion=[float(pose[3]), float(pose[4]), float(pose[5]), float(pose[6])],
             )
         )
     return TrajectoryResponse(trajectory=points)
@@ -336,16 +417,14 @@ async def get_trajectory(sample_interval_us: int = Query(default=100000, ge=1000
 
 @app.get("/api/pose", response_model=PoseAtTime)
 async def get_pose_at_time(timestamp_us: int = Query(...)):
-    trajectory = _get_primary_trajectory()
-    if trajectory is None:
-        raise HTTPException(status_code=400, detail="No trajectory data available.")
-    pose = _interpolate_pose_at(trajectory, timestamp_us)
+    scenario = _get_runtime_scenario()
+    pose = scenario.ego_poses.interpolate_pose_xyzquat(timestamp_us)
     if pose is None:
         raise HTTPException(status_code=400, detail="Timestamp out of range")
     return PoseAtTime(
         timestamp_us=timestamp_us,
-        position=[pose.vec.x, pose.vec.y, pose.vec.z],
-        quaternion=[pose.quat.x, pose.quat.y, pose.quat.z, pose.quat.w],
+        position=[float(pose[0]), float(pose[1]), float(pose[2])],
+        quaternion=[float(pose[3]), float(pose[4]), float(pose[5]), float(pose[6])],
     )
 
 
@@ -354,15 +433,10 @@ async def render_cameras(request: RenderRequest):
     if app_state.grpc_stub is None or app_state.scene_id is None:
         raise HTTPException(status_code=400, detail="No scenario loaded or NuRec not connected")
 
-    trajectory = _get_primary_trajectory()
-    if trajectory is None:
-        raise HTTPException(status_code=400, detail="No trajectory data available.")
-
-    rig_pose = _interpolate_pose_at(trajectory, request.timestamp_us)
-    if rig_pose is None:
+    scenario = _get_runtime_scenario()
+    rig_matrix = scenario.ego_poses.interpolate_pose_matrix(request.timestamp_us)
+    if rig_matrix is None:
         raise HTTPException(status_code=400, detail="Timestamp out of range")
-
-    rig_matrix = _pose_to_matrix(rig_pose)
     results = {}
 
     for camera_id in request.camera_ids:
@@ -419,6 +493,53 @@ async def get_available_cameras():
     if app_state.scene_id is None:
         raise HTTPException(status_code=400, detail="No scenario loaded")
     return {"cameras": list(app_state.available_cameras.keys())}
+
+
+@app.get("/api/playback", response_model=PlaybackStateResponse)
+async def get_playback_state():
+    playback = _get_playback()
+    return _playback_state_response(playback)
+
+
+@app.post("/api/playback/play", response_model=PlaybackStateResponse)
+async def playback_play(request: PlaybackControlRequest):
+    playback = _get_playback()
+    if request.speed is not None:
+        if request.speed <= 0:
+            raise HTTPException(status_code=400, detail="speed must be > 0")
+        playback.speed = float(request.speed)
+    playback.play()
+    return _playback_state_response(playback)
+
+
+@app.post("/api/playback/stop", response_model=PlaybackStateResponse)
+async def playback_stop():
+    playback = _get_playback()
+    playback.stop()
+    return _playback_state_response(playback)
+
+
+@app.post("/api/playback/reset", response_model=PlaybackStateResponse)
+async def playback_reset():
+    playback = _get_playback()
+    playback.reset()
+    return _playback_state_response(playback)
+
+
+@app.post("/api/playback/tick", response_model=PlaybackTickResponse)
+async def playback_tick(request: PlaybackTickRequest):
+    playback = _get_playback()
+    new_track_ids, removed_track_ids, current_time_us = playback.tick(request.delta_us)
+    state = _playback_state_response(playback)
+    return PlaybackTickResponse(
+        is_playing=state.is_playing,
+        speed=state.speed,
+        current_time_us=current_time_us,
+        seconds_since_start=state.seconds_since_start,
+        done=state.done,
+        new_track_ids=new_track_ids,
+        removed_track_ids=removed_track_ids,
+    )
 
 
 if __name__ == "__main__":

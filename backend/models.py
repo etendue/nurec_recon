@@ -78,3 +78,28 @@ class RenderResponse(BaseModel):
 class ErrorResponse(BaseModel):
     """Error response"""
     detail: str
+
+
+class PlaybackControlRequest(BaseModel):
+    """Playback control request"""
+    speed: Optional[float] = None
+
+
+class PlaybackTickRequest(BaseModel):
+    """Manual tick request"""
+    delta_us: Optional[int] = None
+
+
+class PlaybackStateResponse(BaseModel):
+    """Current playback state"""
+    is_playing: bool
+    speed: float
+    current_time_us: int
+    seconds_since_start: float
+    done: bool
+
+
+class PlaybackTickResponse(PlaybackStateResponse):
+    """Tick update response"""
+    new_track_ids: List[str]
+    removed_track_ids: List[str]
